@@ -221,25 +221,79 @@ test('truncated signal yields partial lines and no complete', () => {
 	assert.ok(events.filter((e) => e.type === 'line').length > 0, 'some lines decoded');
 });
 
-//---------- Mic path: signal loss mid-decode ----------//
-test('signal loss mid-decode emits error and returns to listening', () => {
+//---------- Mic path: signal loss mid-decode keeps scanning ----------//
+test('signal loss mid-decode keeps free-running and fills gaps grey', () => {
 	const fs = 48000;
-	const mode = reducedMode(MODES[44], 8);
+	const lines = 8;
+	const mode = reducedMode(MODES[44], lines);
 	const modesOverride = Object.assign({}, MODES, { 44: mode });
 	const VISCode = [false, true, false, true, true, false, false];
-	// Transmit only 2 of 8 lines, then go silent for well over the 2 s timeout.
-	const samples = synthTransmission(fs, mode, VISCode, testImage, { lines: 2, tailSilence: 2.6 });
+	// Transmit only 2 of 8 lines, then go silent. Give enough tail for the
+	// decoder's free-running clock to scan out all remaining lines.
+	const samples = synthTransmission(fs, mode, VISCode, testImage, { lines: 2, tailSilence: 6.0 });
 	const events = [];
 	const core = new SSTVDecoderCore(fs, (e) => events.push(e), modesOverride);
-	// Feed in worklet-sized quanta, calling tick() per chunk like the wrapper.
 	for (let i = 0; i < samples.length; i += 128) {
 		core.push(samples.subarray(i, Math.min(i + 128, samples.length)));
 		core.tick();
 	}
-	assert.ok(events.find((e) => e.type === 'error' && e.message === 'Signal lost'),
-		'signal-loss error emitted');
-	assert.ok(!events.find((e) => e.type === 'complete'), 'no complete');
-	assert.strictEqual(core.state, 'IDLE');
+	// No abort: decoding continues to completion despite the dropout.
+	assert.ok(!events.find((e) => e.type === 'error'), 'no signal-loss error');
+	assert.ok(events.find((e) => e.type === 'complete'), 'still completes all lines');
+	assert.strictEqual(core.state, 'IDLE'); // IDLE via normal completion, listening again
+
+	// The received portion (first ~2 lines) decodes correctly; the lost portion
+	// reads as neutral grey (level ~128), not a smear of the last good pixel.
+	const img = new Uint8ClampedArray(mode.width * lines * 4);
+	for (const e of events) if (e.type === 'line') img.set(e.pixels, e.line * mode.width * 4);
+	// Sample a pixel deep in the lost region (last line, mid-width).
+	const o = ((lines - 1) * mode.width + (mode.width >> 1)) * 4;
+	for (let c = 0; c < 3; c++) {
+		assert.ok(Math.abs(img[o + c] - 128) <= 2, `lost pixel channel ${c} = ${img[o + c]}, expected ~128`);
+	}
+});
+
+//---------- Mid-decode dropout with recovery ----------//
+// A full transmission whose middle is replaced by low-level noise (the acoustic
+// "signal lost" case): lines in the gap must read grey, and lines AFTER the gap
+// must decode correctly again — recovery must not be blocked by the dropout.
+test('recovers and decodes correctly after a noisy mid-decode dropout', () => {
+	const fs = 48000;
+	const lines = 12;
+	const mode = reducedMode(MODES[44], lines);
+	const modesOverride = Object.assign({}, MODES, { 44: mode });
+	const VISCode = [false, true, false, true, true, false, false];
+	const full = synthTransmission(fs, mode, VISCode, testImage, { lines, tailSilence: 0.3 });
+
+	// Replace a middle span with low-level noise, like a mic losing the signal.
+	const a = Math.floor(full.length * 0.30);
+	const b = Math.floor(full.length * 0.50);
+	const sig = Float32Array.from(full);
+	let seed = 12345;
+	const rand = () => { seed = (seed * 1103515245 + 12345) & 0x7fffffff; return seed / 0x3fffffff - 1; };
+	for (let i = a; i < b; i++) sig[i] = rand() * 0.03;
+
+	const events = [];
+	const core = new SSTVDecoderCore(fs, (e) => events.push(e), modesOverride);
+	for (let i = 0; i < sig.length; i += 128) core.push(sig.subarray(i, Math.min(i + 128, sig.length)));
+
+	assert.ok(!events.find((e) => e.type === 'error'), 'no abort on dropout');
+	assert.ok(events.find((e) => e.type === 'complete'), 'completes all lines');
+
+	const img = new Uint8ClampedArray(mode.width * lines * 4);
+	for (const e of events) if (e.type === 'line') img.set(e.pixels, e.line * mode.width * 4);
+
+	// Last line is well after the dropout: it must match the source image, proving
+	// recovery. (Allow generous slack for the post-dropout re-sync transient.)
+	const last = lines - 1;
+	let err = 0;
+	for (let x = 0; x < mode.width; x++) {
+		const [r, g, b2] = testImage(last, x);
+		const o = (last * mode.width + x) * 4;
+		err += Math.abs(img[o] - r) + Math.abs(img[o + 1] - g) + Math.abs(img[o + 2] - b2);
+	}
+	err /= mode.width * 3;
+	assert.ok(err < 10, `post-dropout line mean abs error ${err.toFixed(2)} — did not recover`);
 });
 
 //---------- Reset between two transmissions ----------//

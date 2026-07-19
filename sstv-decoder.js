@@ -24,6 +24,9 @@ const SYNC_PULSE_FREQ = 1200;
 const BLANKING_PULSE_FREQ = 1500;
 const COLOR_FREQ_MULT = 3.1372549; // Hz per 8-bit level
 const LEADER_FREQ = 1900;
+// Frequency that decodes to a neutral mid-grey (level 128). Used to fill pixels
+// that were never received (signal dropout) so the image keeps scanning at pace.
+const GREY_FREQ = 1500 + 128 * COLOR_FREQ_MULT;
 
 //---------- Mode table ----------//
 // Keyed by decoded VIS value (stored VISCode array read MSB-first).
@@ -135,7 +138,11 @@ class SSTVDecoderCore {
 		this.noiseFloor = 0;          // slow EMA of E while gate closed
 		this.envFast = 0;             // fast-attack/slow-release envelope
 		this.gateOpen = false;
-		this.absFloor = 0.02;         // absolute minimum E to consider signal
+		// Absolute minimum E to consider signal. Kept low so a quiet acoustic
+		// signal (SSTV played through speakers into a mic, well below full scale)
+		// still opens the gate. Clean tones read fine at very low amplitude;
+		// the discriminator's E*E>1e-6 guard already rejects true silence.
+		this.absFloor = 0.003;
 
 		this.reset();
 	}
@@ -156,6 +163,8 @@ class SSTVDecoderCore {
 		this.envFast = 0;
 		this.gateOpen = false;
 		this.gateClosedSince = 0;
+		this.lastE = 0;
+		this.sigRef = 0; // learned per-pixel signal energy (see _sDecode)
 
 		this.sampleCount = 0; // absolute sample index since reset
 
@@ -212,6 +221,7 @@ class SSTVDecoderCore {
 
 		const E = Math.sqrt(I * I + Q * Q);
 		this._updateGate(E);
+		this.lastE = E;
 
 		// Instantaneous frequency via phase difference
 		let fInst = this.f;
@@ -261,7 +271,10 @@ class SSTVDecoderCore {
 		if (E > this.envFast) this.envFast = attack * this.envFast + (1 - attack) * E;
 		else this.envFast = release * this.envFast + (1 - release) * E;
 
-		const threshold = Math.max(this.absFloor, 4 * this.noiseFloor);
+		// Open at 2.5x the measured noise floor (was 4x): enough to stay shut on
+		// broadband room noise, but low enough that a modest SNR acoustic signal
+		// still trips it. The absFloor backstops when the room is near-silent.
+		const threshold = Math.max(this.absFloor, 2.5 * this.noiseFloor);
 		const wasOpen = this.gateOpen;
 		if (!this.gateOpen && this.envFast > threshold) {
 			this.gateOpen = true;
@@ -511,16 +524,37 @@ class SSTVDecoderCore {
 			}
 		}
 
-		// Accumulate f into whichever segment n falls in.
-		for (let si = 0; si < this.segments.length; si++) {
-			const seg = this.segments[si];
-			if (n >= seg.start && n < seg.end) {
-				const rel = (n - seg.start) / (seg.end - seg.start);
-				let bin = Math.floor(rel * m.width);
-				if (bin < 0) bin = 0; else if (bin >= m.width) bin = m.width - 1;
-				this.binSum[si][bin] += f;
-				this.binCnt[si][bin]++;
-				break;
+		// Accumulate f into whichever segment n falls in. Decide per-sample whether
+		// this looks like real SSTV pixel data rather than leaning on the slow
+		// envelope gate — under acoustic conditions room noise can hold that gate
+		// open through a dropout (or keep it shut as the signal returns), which
+		// stalls recovery. A sample counts as valid when it carries enough energy
+		// AND its frequency sits inside the pixel band (~1500-2300 Hz, with margin).
+		// Invalid samples are dropped, leaving bins empty to be filled grey; valid
+		// samples resume painting the instant the signal comes back.
+		// `sigRef` is a slow peak-tracking reference of the energy a real pixel
+		// carries, learned from valid samples. Requiring E to clear a fraction of
+		// it rejects low-level room noise during a dropout (which would otherwise
+		// occasionally land in-band and paint stray colors) while still recovering
+		// the moment true signal returns.
+		const energyOk = this.lastE > this.absFloor &&
+			this.lastE > 0.25 * this.sigRef;
+		const validPixel = energyOk && f > 1400 && f < 2400;
+		if (validPixel) {
+			// Track the signal energy reference: fast rise, slow decay.
+			this.sigRef = this.lastE > this.sigRef
+				? this.lastE
+				: this.sigRef * 0.9999 + this.lastE * 0.0001;
+			for (let si = 0; si < this.segments.length; si++) {
+				const seg = this.segments[si];
+				if (n >= seg.start && n < seg.end) {
+					const rel = (n - seg.start) / (seg.end - seg.start);
+					let bin = Math.floor(rel * m.width);
+					if (bin < 0) bin = 0; else if (bin >= m.width) bin = m.width - 1;
+					this.binSum[si][bin] += f;
+					this.binCnt[si][bin]++;
+					break;
+				}
 			}
 		}
 
@@ -576,13 +610,14 @@ class SSTVDecoderCore {
 	_emitLine() {
 		const m = this.mode;
 		const width = m.width;
-		// Average each bin (fill gaps with neighbor).
+		// Average each bin. Bins with no samples were never received (dropout);
+		// fill them with mid-grey so lost data reads as neutral rather than
+		// smearing the last good pixel across the gap.
 		const avg = this.segments.map((seg, si) => {
 			const out = new Float32Array(width);
-			let last = BLANKING_PULSE_FREQ;
 			for (let x = 0; x < width; x++) {
-				if (this.binCnt[si][x] > 0) { out[x] = this.binSum[si][x] / this.binCnt[si][x]; last = out[x]; }
-				else out[x] = last;
+				if (this.binCnt[si][x] > 0) out[x] = this.binSum[si][x] / this.binCnt[si][x];
+				else out[x] = GREY_FREQ;
 			}
 			return out;
 		});
@@ -623,16 +658,11 @@ class SSTVDecoderCore {
 		return (this.lineIndex + this.lineCount) >= this.mode.lines;
 	}
 
-	// Mic path: flag long signal loss mid-decode.
-	tick() {
-		if (this.state === 'DECODE' && !this.gateOpen) {
-			if ((this.sampleCount - this.gateClosedSince) / this.fs > 2.0) {
-				this.emit({ type: 'error', message: 'Signal lost' });
-				this.state = 'IDLE';
-				this._setStatus('listening');
-			}
-		}
-	}
+	// Formerly aborted the decode after a long dropout. We now keep the timing
+	// schedule free-running through signal loss (unreceived pixels are filled
+	// grey), so there is nothing to do here. Retained as a no-op so the mic
+	// wrapper's per-chunk call site stays valid.
+	tick() {}
 }
 
 //---------- AudioWorklet wrapper ----------//
