@@ -113,7 +113,7 @@ class Format {
 		//--- 7 Bit Format Code ---//
 		let parity = 0;
 		let bitFreq;
-		this.#VISCode.reverse().forEach((bit) => {
+		[...this.#VISCode].reverse().forEach((bit) => {
 			if(bit){
 				bitFreq = VIS_BIT_FREQ.ONE;
 				++parity;
@@ -284,7 +284,7 @@ class ScottieBase extends Format {
 	}
 
 	getEncodedLength() {
-		return (super.syncPulseLength + (super.numScanLines * (super.syncPulseLength / 2 + super.blankingInterval + super.scanLineLength)));
+		return (super.syncPulseLength + (super.numScanLines * (super.syncPulseLength + 3 * (super.blankingInterval + super.scanLineLength))));
 	}
 }
 class ScottieOne extends ScottieBase {
@@ -294,7 +294,7 @@ class ScottieOne extends ScottieBase {
 		let blankingInterval = 0.0015;
 		let scanLineLength = 0.138240;
 		let syncPulseLength = 0.009;
-		let VISCode = [false, false, true, true, true, true, false];
+		let VISCode = [false, true, true, true, true, false, false];
 
 		super(numScanLines, pixelsPerLine, blankingInterval, scanLineLength, syncPulseLength, VISCode);
 	}
@@ -376,7 +376,7 @@ class PDBase extends Format {
 	}
 
 	getEncodedLength() {
-		return (super.numScanLines * (super.syncPulseLength + super.blankingInterval + super.scanLineLength * 4));
+		return ((super.numScanLines / 2) * (super.syncPulseLength + super.blankingInterval + super.scanLineLength * 4));
 	}
 }
 class PD50 extends PDBase {
@@ -422,7 +422,7 @@ class PD160 extends PDBase {
 		let blankingInterval = 0.00208;
 		let scanLineLength = 0.195584;
 		let syncPulseLength = 0.02;
-		let VISCode = [true, true, false, false, true, false, false];
+		let VISCode = [true, true, false, false, false, true, false];
 
 		super(numScanLines, pixelsPerLine, blankingInterval, scanLineLength, syncPulseLength, VISCode);
 	}
@@ -702,8 +702,15 @@ downloadButton.onclick = () => {
         audioCtx.resume();
     }
 
-    sstvSignalDuration = sstvFormat.getEncodedLength() + 1;
-    const offlineCtx = new OfflineAudioContext(1, 48000 * sstvSignalDuration, 48000);
+    // Prefix + VIS header precede the image data but are not counted by
+    // getEncodedLength(); include them so the WAV tail isn't truncated.
+    const headerOverhead = 8 * PREFIX_PULSE_LENGTH + 2 * HEADER_PULSE_LENGTH
+        + HEADER_BREAK_LENGTH + 10 * VIS_BIT_LENGTH;
+    // Leading 1 s of silence (oscillator starts at t=1) + header + image data,
+    // plus a small safety tail so the final line boundary is fully rendered.
+    let sstvSignalDuration = 1 + headerOverhead + sstvFormat.getEncodedLength() + 0.5;
+    const sampleRate = 48000;
+    const offlineCtx = new OfflineAudioContext(1, Math.ceil(sampleRate * sstvSignalDuration), sampleRate);
     let oscillator = offlineCtx.createOscillator();
     oscillator.type = "sine";
 

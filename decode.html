@@ -27,12 +27,26 @@
 			<div id="previewArea" class="">
 				<canvas id="preview"></canvas>
 			</div>
-			<p>SSTV decoding is currently under development and not currently operational. Encountered an issue or unexpected behavior? Create an issue <a href="https://github.com/CKegel/Web-SSTV/issues">on GitHub</a>.</p>
+
+			<div class="grid">
+				<button id="micButton" class="contrast">Start Microphone</button>
+				<button id="stopButton" class="secondary" disabled>Stop</button>
+			</div>
+
+			<label id="audioLabel" for="audioPicker">…or decode an audio file:</label>
+			<input type="file" name="audioPicker" id="audioPicker" accept="audio/*" />
+
+			<button id="saveButton" class="outline" disabled>Save Image</button>
+
+			<p>Decode a live SSTV signal from your microphone, or upload a recorded
+			WAV/audio file. The mode is detected automatically from the VIS header.
+			Encountered an issue or unexpected behavior? Create an issue
+			<a href="https://github.com/CKegel/Web-SSTV/issues">on GitHub</a>.</p>
 		</center>
 	</main>
 
 	<footer class="container">
-		<small>SSTV signal decoding and more encoding modes coming soon.</small>
+		<small>More encoding modes coming soon.</small>
 		<br>
 		<small><a href="https://github.com/CKegel/Web-SSTV/">Check out the project on Github</a></small>
 		<br>
