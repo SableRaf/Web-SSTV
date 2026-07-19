@@ -83,6 +83,10 @@ async function startMic() {
 	resetDecodeState();
 	try {
 		micCtx = new AudioContext();
+		// The click gesture is spent by the time addModule + getUserMedia below
+		// resolve, so an autoplay-suspended context would never run process().
+		// Resume explicitly (and again after setup) to guarantee it's running.
+		if (micCtx.state === 'suspended') await micCtx.resume();
 		await micCtx.audioWorklet.addModule('./sstv-decoder.js');
 		micStream = await navigator.mediaDevices.getUserMedia({
 			audio: {
@@ -104,6 +108,9 @@ async function startMic() {
 		mute.gain.value = 0;
 		micNode.connect(mute).connect(micCtx.destination);
 
+		startLevelMeter(source, micCtx);
+		if (micCtx.state === 'suspended') await micCtx.resume();
+
 		setStatus(STATUS_TEXT.listening);
 		micButton.disabled = true;
 		stopButton.disabled = false;
@@ -115,12 +122,58 @@ async function startMic() {
 }
 
 async function stopMic() {
+	stopLevelMeter();
 	if (micNode) { try { micNode.port.postMessage({ type: 'reset' }); } catch (e) {} micNode.disconnect(); micNode = null; }
 	if (micStream) { micStream.getTracks().forEach((t) => t.stop()); micStream = null; }
 	if (micCtx) { try { await micCtx.close(); } catch (e) {} micCtx = null; }
 	micButton.disabled = false;
 	stopButton.disabled = true;
 	audioPicker.disabled = false;
+}
+
+//---------- Microphone level meter ----------//
+// Simple RMS volume bar tapped straight off the mic source. Also serves as a
+// diagnostic: if the bar moves, audio is reaching the graph; if the decode
+// status never advances past "Listening", the signal is too quiet to trip the
+// decoder's envelope gate — raise the source volume or move the mic closer.
+const micLevel = document.getElementById('micLevel');
+const micLevelCtx = micLevel ? micLevel.getContext('2d') : null;
+let micAnalyser = null;
+let micRafId = null;
+
+function startLevelMeter(source, audioCtx) {
+	if (!micLevelCtx) return;
+	micAnalyser = audioCtx.createAnalyser();
+	micAnalyser.fftSize = 1024;
+	source.connect(micAnalyser);
+	micLevel.style.display = 'block';
+
+	const buf = new Float32Array(micAnalyser.fftSize);
+	const draw = () => {
+		micRafId = requestAnimationFrame(draw);
+		micAnalyser.getFloatTimeDomainData(buf);
+		let sum = 0;
+		for (let i = 0; i < buf.length; i++) sum += buf[i] * buf[i];
+		const rms = Math.sqrt(sum / buf.length);
+		const level = Math.min(1, rms * 4); // ~0.25 RMS fills the bar
+
+		const w = micLevel.width, h = micLevel.height;
+		micLevelCtx.clearRect(0, 0, w, h);
+		micLevelCtx.fillStyle = 'rgba(128,128,128,0.25)';
+		micLevelCtx.fillRect(0, 0, w, h);
+		micLevelCtx.fillStyle = level > 0.9 ? '#ff5252' : level > 0.4 ? '#ffd740' : '#69f0ae';
+		micLevelCtx.fillRect(0, 0, w * level, h);
+	};
+	draw();
+}
+
+function stopLevelMeter() {
+	if (micRafId) { cancelAnimationFrame(micRafId); micRafId = null; }
+	if (micAnalyser) { try { micAnalyser.disconnect(); } catch (e) {} micAnalyser = null; }
+	if (micLevel) {
+		micLevel.style.display = 'none';
+		if (micLevelCtx) micLevelCtx.clearRect(0, 0, micLevel.width, micLevel.height);
+	}
 }
 
 micButton.onclick = () => startMic();
