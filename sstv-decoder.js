@@ -273,8 +273,8 @@ class SSTVDecoderCore {
 		if (!this.gateOpen) {
 			const tc = Math.exp(-1 / (1.0 * this.fs)); // ~1 s time constant
 			this.noiseFloor = tc * this.noiseFloor + (1 - tc) * E;
-			this.gateClosedSince = this.sampleCount;
 		}
+		if (wasOpen && !this.gateOpen) this.gateClosedSince = this.sampleCount;
 
 		if (!wasOpen && this.gateOpen) {
 			// Re-zero discriminator state on gate re-open from silence
@@ -387,7 +387,6 @@ class SSTVDecoderCore {
 	}
 
 	_visReject(msg) {
-		this._visBuf = null;
 		this.emit({ type: 'error', message: 'VIS decode failed: ' + msg });
 		this.state = 'IDLE';
 		this._setStatus('listening');
@@ -475,8 +474,10 @@ class SSTVDecoderCore {
 			this.nextAnchor = t + sync;
 		}
 
-		// Shift data-sampling windows later by the discriminator group delay so
-		// pixel frequencies (which appear late in `f`) land in the right bins.
+		// Nudge data-sampling windows earlier by the net timing skew (see the
+		// `groupDelay` comment in the constructor): the anchor's edge-detection
+		// lag slightly exceeds the pixel ramps' filter delay, so predicted
+		// windows land a fraction of a ms late in the `f` stream.
 		// Sync predictions are left uncompensated: sync edges are detected in
 		// the same delayed `f` domain, so their timing is self-consistent.
 		const gd = this.groupDelay;

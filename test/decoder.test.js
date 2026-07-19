@@ -221,6 +221,27 @@ test('truncated signal yields partial lines and no complete', () => {
 	assert.ok(events.filter((e) => e.type === 'line').length > 0, 'some lines decoded');
 });
 
+//---------- Mic path: signal loss mid-decode ----------//
+test('signal loss mid-decode emits error and returns to listening', () => {
+	const fs = 48000;
+	const mode = reducedMode(MODES[44], 8);
+	const modesOverride = Object.assign({}, MODES, { 44: mode });
+	const VISCode = [false, true, false, true, true, false, false];
+	// Transmit only 2 of 8 lines, then go silent for well over the 2 s timeout.
+	const samples = synthTransmission(fs, mode, VISCode, testImage, { lines: 2, tailSilence: 2.6 });
+	const events = [];
+	const core = new SSTVDecoderCore(fs, (e) => events.push(e), modesOverride);
+	// Feed in worklet-sized quanta, calling tick() per chunk like the wrapper.
+	for (let i = 0; i < samples.length; i += 128) {
+		core.push(samples.subarray(i, Math.min(i + 128, samples.length)));
+		core.tick();
+	}
+	assert.ok(events.find((e) => e.type === 'error' && e.message === 'Signal lost'),
+		'signal-loss error emitted');
+	assert.ok(!events.find((e) => e.type === 'complete'), 'no complete');
+	assert.strictEqual(core.state, 'IDLE');
+});
+
 //---------- Reset between two transmissions ----------//
 test('decodes two consecutive transmissions with reset', () => {
 	const fs = 48000;
