@@ -116,6 +116,7 @@ class SSTVDecoderCore {
 		this.fs = sampleRate;
 		this.emit = emit || (() => {});
 		this.modes = modesOverride || MODES;
+		this.forcedVis = null; // VIS code to force, or null to auto-detect
 
 		// Discriminator carrier
 		this.fc = 1700;
@@ -360,6 +361,12 @@ class SSTVDecoderCore {
 			return this._visReject('bad start/stop bit');
 		}
 
+		// Forced mode: the start/stop bits still anchor timing, but the data
+		// bits are ignored so a corrupt or non-standard VIS still decodes.
+		if (this.forcedVis != null && this.modes[this.forcedVis]) {
+			return this._beginMode(this.forcedVis);
+		}
+
 		let bits = [];
 		let parity = 0;
 		for (let k = 1; k <= 7; k++) {
@@ -385,9 +392,12 @@ class SSTVDecoderCore {
 		let vis = visLSB;
 		if (LEGACY_VIS[vis] !== undefined) vis = LEGACY_VIS[vis];
 
-		const mode = this.modes[vis];
-		if (!mode) return this._visReject('unknown VIS ' + visLSB);
+		if (!this.modes[vis]) return this._visReject('unknown VIS ' + visLSB);
+		this._beginMode(vis);
+	}
 
+	_beginMode(vis) {
+		const mode = this.modes[vis];
 		this.mode = mode;
 		this.vis = vis;
 		this.emit({ type: 'mode', vis, name: mode.name, width: mode.width, height: mode.lines });
@@ -670,7 +680,7 @@ const BaseProcessor = typeof AudioWorkletProcessor !== 'undefined'
 	? AudioWorkletProcessor : class {};
 
 class SSTVDecoder extends BaseProcessor {
-	constructor() {
+	constructor(options) {
 		super();
 		const fs = (typeof sampleRate !== 'undefined') ? sampleRate : 48000;
 		this.core = new SSTVDecoderCore(fs, (evt) => {
@@ -680,8 +690,12 @@ class SSTVDecoder extends BaseProcessor {
 				this.port.postMessage(evt);
 			}
 		});
+		const opts = (options && options.processorOptions) || {};
+		this.core.forcedVis = opts.forcedVis != null ? opts.forcedVis : null;
 		this.port.onmessage = (e) => {
-			if (e.data && e.data.type === 'reset') this.core.reset();
+			if (!e.data) return;
+			if (e.data.type === 'reset') this.core.reset();
+			else if (e.data.type === 'setMode') this.core.forcedVis = e.data.vis;
 		};
 	}
 

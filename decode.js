@@ -22,6 +22,16 @@ const micButton = document.getElementById('micButton');
 const stopButton = document.getElementById('stopButton');
 const audioPicker = document.getElementById('audioPicker');
 const saveButton = document.getElementById('saveButton');
+const modeSelect = document.getElementById('modeSelect');
+
+// null = auto-detect from VIS; otherwise the VIS code of the forced mode.
+function selectedVis() {
+	return modeSelect.value === 'auto' ? null : Number(modeSelect.value);
+}
+
+modeSelect.addEventListener('change', () => {
+	if (micNode) micNode.port.postMessage({ type: 'setMode', vis: selectedVis() });
+});
 
 //---------- Shared decode state ----------//
 let decodeState = {
@@ -100,6 +110,7 @@ async function startMic() {
 			channelCount: 1,
 			channelCountMode: 'explicit',
 			channelInterpretation: 'speakers',
+			processorOptions: { forcedVis: selectedVis() },
 		});
 		micNode.port.onmessage = (e) => handlePortMessage(e.data);
 		source.connect(micNode);
@@ -212,6 +223,7 @@ async function decodeFile(file) {
 		channelCount: 1,
 		channelCountMode: 'explicit',
 		channelInterpretation: 'speakers',
+		processorOptions: { forcedVis: selectedVis() },
 	});
 	node.port.onmessage = (e) => handlePortMessage(e.data);
 	src.connect(node);

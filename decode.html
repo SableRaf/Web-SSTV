@@ -28,6 +28,28 @@
 				<canvas id="preview"></canvas>
 			</div>
 
+			<label id="modeLabel" for="modeSelect">Mode:</label>
+			<select id="modeSelect">
+				<option value="auto" selected>Auto-detect (VIS)</option>
+				<option disabled>--- Martin ---</option>
+				<option value="44">Martin M1</option>
+				<option value="40">Martin M2</option>
+				<option disabled>--- Scottie ---</option>
+				<option value="60">Scottie 1</option>
+				<option value="56">Scottie 2</option>
+				<option value="76">Scottie DX</option>
+				<option disabled>--- WRAASE ---</option>
+				<option value="55">SC2-180</option>
+				<option disabled>--- PD ---</option>
+				<option value="93">PD-50</option>
+				<option value="99">PD-90</option>
+				<option value="95">PD-120</option>
+				<option value="98">PD-160</option>
+				<option value="96">PD-180</option>
+				<option value="97">PD-240</option>
+				<option value="94">PD-290</option>
+			</select>
+
 			<div class="grid">
 				<button id="micButton" class="contrast">Start Microphone</button>
 				<button id="stopButton" class="secondary" disabled>Stop</button>
@@ -41,7 +63,8 @@
 			<button id="saveButton" class="outline" disabled>Save Image</button>
 
 			<p>Decode a live SSTV signal from your microphone, or upload a recorded
-			WAV/audio file. The mode is detected automatically from the VIS header.
+			WAV/audio file. The mode is detected automatically from the VIS header, or you can force
+			one if the header is corrupted or non-standard.
 			Encountered an issue or unexpected behavior? Create an issue
 			<a href="https://github.com/CKegel/Web-SSTV/issues">on GitHub</a>.</p>
 		</center>
